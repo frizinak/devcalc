@@ -259,6 +259,37 @@ func printOptions(strs []string) {
 	}
 }
 
+func filterEntries(chem, stock, iso, ratio string) ([]devchart.Entry, error) {
+	entries, err := devchart.Get(getCacheDir("mdc"), chem)
+	if err != nil {
+		return nil, err
+	}
+
+	stockQuery := wcGen(stock)
+	filtered := make([]devchart.Entry, 0, len(entries))
+	for _, e := range entries {
+		if iso != "" && e.ISO != iso {
+			continue
+		}
+
+		if ratio != "" {
+			eratio := dev.ScaleString(dev.ScaleParts(e.Dilution))
+			if eratio != ratio {
+				continue
+			}
+		}
+
+		name := strip(e.Name)
+		if stock != "" && !wcMatch(stockQuery, name) {
+			continue
+		}
+
+		filtered = append(filtered, e)
+	}
+
+	return filtered, nil
+}
+
 func printEntries(entries []devchart.Entry, format Format) {
 	slices.SortFunc(entries, func(a, b devchart.Entry) int {
 		if n := cmp.Compare(a.Developer, b.Developer); n != 0 {
@@ -458,34 +489,28 @@ func main() {
 		return func(w io.Writer) {
 			fmt.Fprintln(w, "Get development times for the given developer and stock")
 			fmt.Fprintln(w, "Usage:")
-			fmt.Fprintln(w, set.Name(), "<developer>", "[stock]")
-			fmt.Fprintln(w, "  <developer>  required, use `mdc list developers` to get a listing")
+			fmt.Fprintln(w, set.Name(), "<developer>", "[stock]", "[iso]")
+			fmt.Fprintln(w, "  <developer>  required, use `mdc list developers` to get a listing.")
 			fmt.Fprintln(w, "  [stock]      optional, use `mdc list stocks`     to get a listing. supports * for wildcard matching.")
+			fmt.Fprintln(w, "  [iso]        optional, only show entries with the specified iso.")
 		}
 	}).Handler(func(set *flags.Set, args []string) error {
-		if len(args) == 0 || len(args) > 2 {
+		if len(args) == 0 || len(args) > 3 {
 			set.Usage(1)
 		}
 
-		devr, _ := unstrip(args[0])
-		var stock string
-		if len(args) == 2 {
+		chem, _ := unstrip(args[0])
+		var stock, iso string
+		if len(args) > 1 {
 			stock = strip(args[1])
 		}
-
-		entries, err := devchart.Get(getCacheDir("mdc"), devr)
-		if err != nil {
-			return err
+		if len(args) > 2 {
+			iso = args[2]
 		}
 
-		stockQuery := wcGen(stock)
-		filtered := make([]devchart.Entry, 0, len(entries))
-		for _, e := range entries {
-			name := strip(e.Name)
-			if stock != "" && !wcMatch(stockQuery, name) {
-				continue
-			}
-			filtered = append(filtered, e)
+		filtered, err := filterEntries(chem, stock, iso, "")
+		if err != nil {
+			return err
 		}
 
 		printEntries(filtered, Format135|Format120|FormatSheet)
@@ -558,15 +583,16 @@ func main() {
 		return func(w io.Writer) {
 			fmt.Fprintln(w, "Calculate developing volumes")
 			fmt.Fprintln(w, "Usage:")
-			fmt.Fprintln(w, set.Name(), "<developer>", "<ratio>", "<volume>", "[stock]")
+			fmt.Fprintln(w, set.Name(), "<developer>", "<ratio>", "<volume>", "[stock]", "[iso]")
 			fmt.Fprintln(w, "  <developer>  required, use `mdc list developers` to get a listing.")
 			fmt.Fprintln(w, "                         can also be any of your aliases with a stored density for mixing by weight.")
 			fmt.Fprintln(w, "  <ratio>      required, the dilution to use.")
 			fmt.Fprintln(w, "  <volume>     required, the total developing volume (ml).")
-			fmt.Fprintf(w, "  [stock]      optional, also print developing information (see: %s)\n", cmdMDCGet.Name())
+			fmt.Fprintf(w, "  [stock]      optional, also print developing information. (see: %s)\n", cmdMDCGet.Name())
+			fmt.Fprintln(w, "  [iso]        optional, only show entries with the specified iso.")
 		}
 	}).Handler(func(set *flags.Set, args []string) error {
-		if len(args) < 3 || len(args) > 4 {
+		if len(args) < 3 || len(args) > 5 {
 			set.Usage(1)
 			return nil
 		}
@@ -589,9 +615,12 @@ func main() {
 			return fmt.Errorf("invalid volume")
 		}
 
-		var stock string
-		if len(args) == 4 {
+		var stock, iso string
+		if len(args) > 3 {
 			stock = args[3]
+		}
+		if len(args) > 4 {
+			iso = args[4]
 		}
 		alias := aliases[chem]
 
@@ -604,28 +633,12 @@ func main() {
 			chem = alias.Dev
 		}
 		chem, _ = unstrip(chem)
+		qratio := dev.ScaleString(dev.ScaleParts(ratio))
 
-		entries, err := devchart.Get(getCacheDir("mdc"), chem)
+		filtered, err := filterEntries(chem, stock, iso, qratio)
 		if err != nil {
 			return err
 		}
-
-		qratio := dev.ScaleString(dev.ScaleParts(ratio))
-		stockQuery := wcGen(stock)
-		filtered := make([]devchart.Entry, 0, len(entries))
-		for _, e := range entries {
-			eratio := dev.ScaleString(dev.ScaleParts(e.Dilution))
-			if eratio != qratio {
-				continue
-			}
-
-			name := strip(e.Name)
-			if stock != "" && !wcMatch(stockQuery, name) {
-				continue
-			}
-			filtered = append(filtered, e)
-		}
-
 		printEntries(filtered, Format135|Format120|FormatSheet)
 
 		return nil
