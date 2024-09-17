@@ -24,6 +24,8 @@ func NewRoot(output io.Writer) *Set {
 	return New(flag.CommandLine, output)
 }
 
+func (f *Set) Name() string { return f.name }
+
 func (f *Set) Define(cb func(*flag.FlagSet) func(io.Writer)) *Set {
 	helper := cb(f.f)
 	f.f.Usage = func() {

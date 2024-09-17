@@ -356,11 +356,10 @@ func printEntries(entries []devchart.Entry, format Format) {
 }
 
 func wcGen(str string) []string {
-	return strings.Split(str, "*")
+	return strings.Split(strings.ToLower(str), "*")
 }
 
 func wcMatch(query []string, target string) bool {
-	//func filterString(s string, filter []string) bool {
 	lc := strings.ToLower(target)
 	for i, p := range query {
 		method := strings.Contains
@@ -455,7 +454,7 @@ func main() {
 		return nil
 	})
 
-	cmdMDC.Add("get").Define(func(set *flag.FlagSet) func(io.Writer) {
+	cmdMDCGet := cmdMDC.Add("get").Define(func(set *flag.FlagSet) func(io.Writer) {
 		return func(w io.Writer) {
 			fmt.Fprintln(w, "Get development times for the given developer and stock")
 			fmt.Fprintln(w, "Usage:")
@@ -527,7 +526,7 @@ func main() {
 			fmt.Fprintln(w, set.Name(), "<alias>", "<developer>", "[density]")
 			fmt.Fprintln(w, "  <alias>      required")
 			fmt.Fprintln(w, "  <developer>  required, use `mdc list developers` to get a listing")
-			fmt.Fprintln(w, "  [density]    required, the density, can be a decimal number or a fraction (e.g.: 0.7 or 300.5/1000)")
+			fmt.Fprintln(w, "  [density]    optional, the density, can be a decimal number or a fraction (e.g.: 0.7 or 300.5/1000)")
 		}
 	}).Handler(func(set *flags.Set, args []string) error {
 		if len(args) < 2 || len(args) > 3 {
@@ -560,11 +559,11 @@ func main() {
 			fmt.Fprintln(w, "Calculate developing volumes")
 			fmt.Fprintln(w, "Usage:")
 			fmt.Fprintln(w, set.Name(), "<developer>", "<ratio>", "<volume>", "[stock]")
-			fmt.Fprintln(w, "  <developer>  required, use `mdc list developers` to get a listing")
-			fmt.Fprintln(w, "                         can also be any of your aliases with a stored density for mixing by weight")
-			fmt.Fprintln(w, "  <ratio>      required, the dilution to use")
-			fmt.Fprintln(w, "  <volume>     required, the total developing volume (ml)")
-			fmt.Fprintln(w, "  [stock]      optional, use `mdc list stocks` to get a listing. supports * for wildcard matching.")
+			fmt.Fprintln(w, "  <developer>  required, use `mdc list developers` to get a listing.")
+			fmt.Fprintln(w, "                         can also be any of your aliases with a stored density for mixing by weight.")
+			fmt.Fprintln(w, "  <ratio>      required, the dilution to use.")
+			fmt.Fprintln(w, "  <volume>     required, the total developing volume (ml).")
+			fmt.Fprintf(w, "  [stock]      optional, also print developing information (see: %s)\n", cmdMDCGet.Name())
 		}
 	}).Handler(func(set *flags.Set, args []string) error {
 		if len(args) < 3 || len(args) > 4 {
