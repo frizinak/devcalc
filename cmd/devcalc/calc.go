@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/containerd/console"
 	"github.com/frizinak/devcalc/dev"
 	"github.com/frizinak/devcalc/devchart"
 	"github.com/frizinak/devcalc/flags"
@@ -414,7 +416,17 @@ func wcMatch(query []string, target string) bool {
 		}
 	}
 	return true
-	// }
+}
+
+type Size struct{ X, Y int }
+
+func termSize() Size {
+	termsize, err := console.Current().Size()
+	if err != nil {
+		return Size{}
+	}
+
+	return Size{int(termsize.Width), int(termsize.Height)}
 }
 
 func main() {
@@ -426,9 +438,243 @@ func main() {
 			fmt.Fprintln(w, "  ", set.Name(), "calc:  Calculate developing volumes")
 			fmt.Fprintln(w, "  ", set.Name(), "alias: Alias developers and optionally store densities")
 			fmt.Fprintln(w, "  ", set.Name(), "mdc:   Massive Dev Chart operations")
+			fmt.Fprintln(w, "  ", set.Name(), "timer: Run a developing timer")
 		}
 	}).Handler(func(set *flags.Set, args []string) error {
 		set.Usage(1)
+		return nil
+	})
+
+	fr.Add("timer").Define(func(set *flag.FlagSet) func(io.Writer) {
+		return func(w io.Writer) {
+			fmt.Fprintln(w, "Run developing timer")
+			fmt.Fprintln(w, "Usage:")
+			fmt.Fprintln(w, "  ", set.Name(), "<total> <initial> <agitation> <interval> [delay]")
+			fmt.Fprintln(w, "  <total>     required, total development duration (e.g.: 7m30s)")
+			fmt.Fprintln(w, "  <initial>   required, duration of initial agitation phase (e.g.: 0:30)")
+			fmt.Fprintln(w, "  <agitation> required, duration of normal agitation phases (e.g.: 10s)")
+			fmt.Fprintln(w, "  <interval>  required, interval of normal agitation phases (e.g.: 30)")
+			fmt.Fprintln(w, "  [delay]     optional, initial delay (e.g.: 5)")
+		}
+	}).Handler(func(set *flags.Set, args []string) error {
+		if len(args) < 4 || len(args) > 5 {
+			set.Usage(1)
+		}
+
+		durs := make([]time.Duration, 5)
+		for i, d := range args {
+			if len(d) == 0 {
+				set.Usage(1)
+			}
+
+			last := d[len(d)-1]
+			if last != 's' && last != 'm' {
+				d = d + "s"
+			}
+			d = strings.Replace(d, ":", "m", 1)
+
+			var err error
+			durs[i], err = time.ParseDuration(d)
+			if err != nil {
+				return fmt.Errorf("could not parse '%s'", args[i])
+			}
+		}
+
+		durTotal := durs[0]
+		durInit := durs[1]
+		durAgi := durs[2]
+		durIv := durs[3]
+		delay := durs[4]
+
+		if durAgi == 0 {
+			durIv = 0
+		} else if durIv <= durAgi {
+			return fmt.Errorf("can not have an agitation interval that is lower than or equal to the agitation duration")
+		}
+
+		s := time.Now()
+		phase := 0
+		if delay == 0 {
+			phase = 1
+		}
+
+		var pdur func(dur time.Duration) string
+		{
+			const remDiv = 100 // determines framerate
+			prec := math.Log10(1000 / remDiv)
+			format := fmt.Sprintf("%%02d:%%02d.%%0%dd", int(prec))
+			pdur = func(dur time.Duration) string {
+				huns := dur.Milliseconds() / remDiv
+
+				const md = 60000 / remDiv
+				mins := huns / md
+				huns -= mins * md
+
+				const sd = 1000 / remDiv
+				secs := huns / sd
+				huns -= secs * sd
+
+				return fmt.Sprintf(format, mins, secs, huns)
+			}
+		}
+
+		buf := bytes.NewBuffer(make([]byte, 0, 4096))
+
+		var clear = []byte("\033[2J\033[H")
+		var clrReset = []byte("\033[0m")
+
+		var clrFGLight = []byte("\033[1m\033[38;5;255m")
+		var clrFGRed = []byte("\033[48;5;52m\033[38;5;255m")
+		var clrFGGreen = []byte("\033[48;5;22m\033[38;5;255m")
+
+		var clrBGRed = []byte("\033[48;5;88m")
+		var clrBGGreen = []byte("\033[48;5;34m")
+		var clrBGBlack = []byte("\033[48;5;233m")
+
+		const space = ' '
+		const nl = '\n'
+		var lastTermMeasure time.Time
+		var term Size
+
+		out := func(clrFG, clrBG []byte, str string) {
+			// len should be ok as long as we don't use any unicode that
+			// could be printed wider.
+			w := (term.X - len(str) - 2) / 2
+			for i := 0; i < w; i++ {
+				buf.WriteByte(space)
+			}
+			buf.Write(clrFG)
+			buf.WriteByte(space)
+			buf.WriteString(str)
+			buf.WriteByte(space)
+			buf.Write(clrBG)
+			for i := 0; i < term.X-w-len(str)-2; i++ {
+				buf.WriteByte(space)
+			}
+			buf.WriteByte(nl)
+		}
+
+		type c struct{ fg, bg, high []byte }
+		var clr c
+		agis := time.Duration(0)
+
+		type o struct {
+			label, remaining, total string
+		}
+		var output, lastOutput o
+		var done, exit, force bool
+
+		for {
+			since := time.Since(s) - delay
+			left := durTotal - since
+
+			switch {
+			case left <= -time.Second*10:
+				exit = true
+			case left <= 0:
+				if (int(since.Seconds()*5)%2 == 0) == done {
+					done = !done
+					force = true
+				}
+				clr = c{clrFGLight, clrBGRed, clrFGRed}
+				output = o{"", "Done", ""}
+				if done {
+					clr = c{clrFGLight, clrBGGreen, clrFGGreen}
+				}
+			case phase == 0:
+				if since >= 0 {
+					phase = 1
+					continue
+				}
+				clr = c{clrFGLight, clrBGBlack, clrFGLight}
+				output = o{"wait", pdur(-since), ""}
+			case phase == 1:
+				rem := durInit - since
+				if rem > left {
+					rem = left
+				}
+				if rem <= 0 {
+					phase = 2
+					continue
+				}
+				clr = c{clrFGLight, clrBGRed, clrFGRed}
+				output = o{"AGITATE!", pdur(rem), pdur(left)}
+			case phase == 2:
+				rem := (agis+1)*durIv - (since - durInit)
+				if durIv <= 0 {
+					rem = left
+				}
+				if rem > left {
+					rem = left
+				}
+				if rem <= 0 {
+					agis++
+					phase = 3
+					continue
+				}
+				clr = c{clrFGLight, clrBGGreen, clrFGGreen}
+				output = o{"Developing", pdur(rem), pdur(left)}
+			case phase == 3:
+				rem := agis*durIv + durAgi - (since - durInit)
+				if rem > left {
+					rem = left
+				}
+				if rem <= 0 {
+					phase = 2
+					continue
+				}
+
+				clr = c{clrFGLight, clrBGRed, clrFGRed}
+				output = o{"AGITATE!", pdur(rem), pdur(left)}
+			}
+
+			if time.Since(lastTermMeasure) > time.Millisecond*100 {
+				lastTermMeasure = time.Now()
+				term = termSize()
+			}
+
+			if output != lastOutput || force {
+				force = false
+				lastOutput = output
+				buf.Write(clear)
+				lw := 5
+				var i int
+				for ; i < (term.Y-lw)/2+1; i++ {
+					buf.Write(clr.bg)
+					for i := 0; i < term.X; i++ {
+						buf.WriteByte(space)
+					}
+					buf.WriteByte(nl)
+				}
+				lw += i
+
+				out(clr.fg, clr.bg, output.label)
+				out(clr.fg, clr.bg, "")
+				out(clr.high, clr.bg, output.remaining)
+				out(clr.fg, clr.bg, "")
+				out(clr.fg, clr.bg, output.total)
+
+				for i := lw; i < term.Y; i++ {
+					buf.Write(clr.bg)
+					for i := 0; i < term.X; i++ {
+						buf.WriteByte(space)
+					}
+					buf.WriteByte(nl)
+				}
+
+				buf.Write(clrReset)
+
+				buf.WriteTo(os.Stdout)
+				buf.Reset()
+			}
+
+			if exit {
+				break
+			}
+
+			time.Sleep(time.Millisecond * 10)
+		}
+
 		return nil
 	})
 
